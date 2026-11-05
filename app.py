@@ -3,10 +3,63 @@ import threading,uuid,shutil,json
 from fastapi import FastAPI,UploadFile,File,Form,HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pipeline import run
+import os
+import secrets
+from fastapi.security import HTTPBasic
+from fastapi.responses import JSONResponse
+
+
+def hosted():
+    # A Railway deployment cannot opt out through a false local override.
+    return bool(os.getenv('RAILWAY_ENVIRONMENT_ID') or os.getenv('GENJUSTSU_PASSWORD')) or os.getenv('GENJUSTSU_HOSTED') == '1' or demo()
+
+
+def demo():
+    return os.getenv('GENJUSTSU_DEMO') == '1'
+
 ROOT=Path(__file__).resolve().parent
 RUNS=ROOT/'runs';RUNS.mkdir(exist_ok=True)
 app=FastAPI();jobs={}
+basic_auth = HTTPBasic(auto_error=False)
+
+
+@app.middleware('http')
+async def protect_hosted_workflow(request, call_next):
+    # Public allowlist: all other paths/methods are guarded BEFORE body parsing,
+    # including mounted artifacts, docs, trailing slashes and future endpoints.
+    public = request.method in ('GET', 'HEAD') and (
+        request.url.path in ('/', '/health', '/capabilities')
+        or request.url.path.startswith('/static/')
+    )
+    if hosted() and not public:
+        if demo():
+            return JSONResponse({'detail': 'Read-only demo: uploads, jobs and private media are disabled.'}, status_code=403)
+        password = os.getenv('GENJUSTSU_PASSWORD', '')
+        if not password:
+            return JSONResponse({'detail': 'Hosted workflow is locked: authentication is not configured.'}, status_code=503)
+        try:
+            credentials = await basic_auth(request)
+        except HTTPException:
+            credentials = None
+        if credentials is None or not (
+            secrets.compare_digest(credentials.username.encode(), b'genjustsu')
+            and secrets.compare_digest(credentials.password.encode(), password.encode())
+        ):
+            return JSONResponse({'detail': 'Authentication required.'}, status_code=401,
+                                headers={'WWW-Authenticate': 'Basic realm="Genjustsu", charset="UTF-8"'})
+    response = await call_next(request)
+    if hosted():
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+@app.get('/capabilities')
+def capabilities():
+    enabled = not demo() and (not hosted() or bool(os.getenv('GENJUSTSU_PASSWORD')))
+    return {'workflow_enabled': enabled, 'hosted': hosted(), 'demo': demo(),
+            'authentication_required': hosted() and enabled}
+
 @app.get('/')
 def index():return FileResponse(ROOT/'static/index.html')
 @app.post('/jobs')
@@ -24,7 +77,9 @@ def create(video:UploadFile=File(...),prompt:str=Form('person'),provider:str=For
             elif mode=='depth_mesh':
                 from face_mesh import run_depth
                 run_depth(src,folder,prompt,provider,lambda s:jobs[ident].update(status=s))
-            else:run(src,folder,prompt,provider,lambda s:jobs[ident].update(status=s))
+            else:
+                from pipeline import run
+                run(src,folder,prompt,provider,lambda s:jobs[ident].update(status=s))
             jobs[ident].update(state='done',status='Preparation complete · input review required')
             (folder/'status.json').write_text(json.dumps(jobs[ident]))
         except Exception as e:
@@ -138,7 +193,8 @@ app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 
 @app.on_event('startup')
 def resume_saved_generations():
-    """Resume collection only: never requeue a paid prediction on restart."""
+    """Resume collection only locally; hosted startup never contacts providers."""
+    if hosted():return
     from seedance_bridge import wait_and_finish
     for root in RUNS.iterdir():
         if not root.is_dir() or len(root.name)!=32:continue
