@@ -9,6 +9,7 @@
 </style></head><body><main>
 <header><div class="brand">Genjustsu <span class="eyebrow">/ TEIN</span></div><a class="button secondary" href="https://tein.ai" target="_blank" rel="noopener">Get early access ↗</a></header>
 <div class="hero"><div><span class="eyebrow">TEIN GENJUSTSU · OPEN SOURCE WORKFLOW</span><h1>Your scene.<br>New characters.</h1><p>Prepare your video, review a draft, then finish in full quality.</p></div><img class="companion" src="/static/companions/video.webp" alt="TEIN video companion"></div>
+<p id="deployment-notice" class="status" role="status" hidden></p>
 <nav class="steps" aria-label="Workflow"><a href="#source"><b>01</b>Upload</a><a href="#review"><b>02</b>Review input</a><a href="#draft"><b>03</b>Create draft</a><a href="#final"><b>04</b>Approve & export</a></nav>
 <div id="status" class="status" role="status"><span class="dot"></span><span id="status-text">Start by choosing your original video.</span></div>
 <section class="panel" id="source"><div class="heading"><span class="number">01</span><h2>Start with your video</h2></div>
@@ -39,5 +40,21 @@ async function pollHD(){try{const j=await json('/jobs/'+jobId+'/hd');$('#upgrade
 $('#review-check').onchange=()=>{$('#approve-mask').disabled=!$('#review-check').checked};
 async function saveReview(approved){try{const data=new FormData();data.set('approved',approved);data.set('fingerprint',maskFingerprint);data.set('note',approved?'Prepared input approved after full-clip visual review.':'Mask needs correction. Seedance submission is blocked.');await json('/jobs/'+jobId+'/mask-review',{method:'POST',body:data});await refresh()}catch(e){status(e.message,true)}}
 $('#approve-mask').onclick=()=>saveReview(true);$('#reject-mask').onclick=()=>saveReview(false);
-if(jobId){refresh().then(watch).catch(e=>status(e.message,true));fetch('/jobs/'+jobId+'/hd').then(r=>r.ok?r.json():null).then(j=>{if(j&&j.state==='running'){$('#upgrade').disabled=true;pollHD()}})}
+async function initializeWorkflow(){
+  const controls=[...document.querySelectorAll('form input,form select,form textarea,button')];
+  const previous=controls.map(control=>control.disabled);
+  controls.forEach(control=>control.disabled=true);
+  try{
+    const capabilities=await json('/capabilities');
+    if(!capabilities.workflow_enabled){
+      $('#deployment-notice').hidden=false;
+      $('#deployment-notice').textContent='Read-only preview · Uploads, processing, generation and private media are disabled. No provider requests are made.';
+      status('Explore the workflow below. This deployment cannot accept videos or generate media.');
+      return;
+    }
+    controls.forEach((control,i)=>control.disabled=previous[i]);
+    if(jobId){await refresh();await watch();const j=await json('/jobs/'+jobId+'/hd');if(j.state==='running'){$('#upgrade').disabled=true;pollHD()}}
+  }catch(e){status('Workflow unavailable. Upload and generation controls are disabled.',true)}
+}
+initializeWorkflow();
 </script></body></html>

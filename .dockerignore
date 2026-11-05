@@ -1,0 +1,17 @@
+# Allowlist the preview build context. Never send local credentials, input/output
+# media, saved runs, virtualenvs, git metadata or worker/model caches to a build.
+**
+!Dockerfile
+!.dockerignore
+!app.py
+!static/
+!static/**
+
+# Defense in depth for private material accidentally placed under static/.
+**/.env
+**/.env.*
+**/*secret*
+**/*credential*
+**/*.pem
+**/*.key
+**/.DS_Store
